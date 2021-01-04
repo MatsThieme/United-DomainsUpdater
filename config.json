@@ -1,0 +1,9 @@
+{
+    "email": "",
+    "password": "",
+    "update interval": 1000,
+    "domain": {
+        "name": "example.com",
+        "ttl": 600
+    }
+}
