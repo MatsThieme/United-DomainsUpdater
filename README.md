@@ -11,7 +11,7 @@ npm i
 ### Build typescript project
 npx tsc main.ts
 
-### Edit config.json and insert username, password and domain/subdomain.
+### Edit config.json and insert email, password and domain/subdomain.
 
 ### Run
 node main
