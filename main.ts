@@ -1,9 +1,9 @@
 import { v4 as getV4, v6 as getV6 } from "public-ip";
-import { resolve4, resolve6 } from "dns";
-import { promisify } from "util";
 import parse, { HTMLElement } from "node-html-parser";
-import r, { CoreOptions, Response } from "request";
+import { CoreOptions, Response } from "request";
 import { readFile } from "fs/promises";
+
+import r  = require('request');
 
 const request = r.defaults({ jar: true, gzip: true });
 
@@ -17,9 +17,6 @@ interface Config {
         ttl: number
     }
 }
-
-let currentIpv4: string;
-let currentIpv6: string;
 
 let config!: Config;
 let subDomain!: string;
@@ -47,12 +44,12 @@ async function update() {
     console.log(config.domain.name);
 
     const ipV4 = await getV4();
-    const domainIpV4 = currentIpv4 || await asyncResolve4(config.domain.name);
+    const domainIpV4 = await getCurrentIPV4(config.domain.name);
 
     console.log(ipV4, domainIpV4);
 
     const ipV6 = await getV6();
-    const domainIpV6 = currentIpv6 || await asyncResolve6(config.domain.name);
+    const domainIpV6 = await getCurrentIPV6(config.domain.name);
 
     console.log(ipV6, domainIpV6);
 
@@ -64,9 +61,9 @@ async function update() {
         console.log('loggedin');
     }
 
-    if (ipV4 !== domainIpV4) await setIPV4(ipV4);
+    if (ipV4 !== domainIpV4) await setIPV4(config.domain.name, ipV4);
 
-    if (ipV6 !== domainIpV6) await setIPV6(ipV6);
+    if (ipV6 !== domainIpV6) await setIPV6(config.domain.name, ipV6);
 
     if (start + config["update interval"] > Date.now()) await asyncTimeout((start + config["update interval"]) - Date.now());
 
@@ -81,22 +78,6 @@ async function asyncRequest(uri: string, options?: CoreOptions): Promise<Respons
             else resolve(response);
         }));
     });
-}
-
-async function asyncResolve4(hostname: string): Promise<string | undefined> {
-    try {
-        return (await promisify(resolve4)(hostname))[0];
-    } catch {
-        return undefined;
-    }
-}
-
-async function asyncResolve6(hostname: string): Promise<string | undefined> {
-    try {
-        return (await promisify(resolve6)(hostname))[0];
-    } catch {
-        return undefined;
-    }
 }
 
 function asyncTimeout(ms: number): Promise<void> {
@@ -120,12 +101,12 @@ async function getLanguageCSRF(): Promise<string> {
     return html.match(/"CSRF_TOKEN":"(.+)","AJAX_TOKEN"/)![1];
 }
 
-async function getDomainID(fail: boolean = false): Promise<number | undefined> {
+async function getDomainID(domain: string, fail: boolean = false): Promise<number | undefined> {
     if (fail) throw 'not authenticated';
 
     if (!await isAuthenticated()) {
         await login();
-        return await getDomainID(true);
+        return await getDomainID(domain, true);
     }
 
     const json = <string>(await asyncRequest('https://www.united-domains.de/pfapi/domain-list', { headers: defaultHeaders })).body;
@@ -155,10 +136,10 @@ async function isAuthenticated(): Promise<boolean> {
     return !html.includes('login');
 }
 
-async function setIP(ip: string, isIpV6: boolean = false): Promise<void> {
+async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promise<void> {
     console.log('set ip');
 
-    const domainID = await getDomainID();
+    const domainID = await getDomainID(domain);
 
     const body = JSON.stringify({
         'record': {
@@ -192,22 +173,24 @@ async function setIP(ip: string, isIpV6: boolean = false): Promise<void> {
     });
 }
 
-async function setIPV4(ip: string): Promise<void> {
-    await setIP(ip);
-    currentIpv4 = ip;
+async function getCurrentIPV4(domain: string): Promise<string | undefined> {
+    const x: { data: { A: { domain: string, address: string }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
 
-    setTimeout(() => {
-        currentIpv4 = '';
-    }, 600000);
+    return x.data.A.find(e => e.domain === domain)?.address;
 }
 
-async function setIPV6(ip: string): Promise<void> {
-    await setIP(ip, true);
-    currentIpv6 = ip;
+async function getCurrentIPV6(domain: string): Promise<string | undefined> {
+    const x: { data: { AAAA: { domain: string, address: string }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
 
-    setTimeout(() => {
-        currentIpv6 = '';
-    }, 600000);
+    return x.data.AAAA.find(e => e.domain === domain)?.address;
+}
+
+async function setIPV4(domain: string, ip: string): Promise<void> {
+    await setIP(domain, ip);
+}
+
+async function setIPV6(domain: string, ip: string): Promise<void> {
+    await setIP(domain, ip, true);
 }
 
 async function setUserLanguage() {
