@@ -9,9 +9,9 @@ A recent version of nodejs and npm
 npm i
 
 ### Build typescript project
-npx tsc main.ts
+npm run build
 
 ### Edit config.json and insert email, password and domain/subdomain.
 
 ### Run
-node main
+npm start
