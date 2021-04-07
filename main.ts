@@ -1,6 +1,4 @@
-import { readFile } from 'fs/promises';
 import parse, { HTMLElement } from 'node-html-parser';
-import { v4 as getV4, v6 as getV6 } from 'public-ip';
 import { CoreOptions, Response } from 'request';
 
 import r = require('request');
@@ -18,8 +16,11 @@ interface Config {
     }
 }
 
-let config!: Config;
-let subDomain!: string;
+let busy: boolean = false;
+const config: Config = require('./config.json');
+const subDomain: string = (config.domain.name.match(/^(.*?)\..+?\..*?$/) || '')[1] || '';
+
+if (subDomain) config.domain.name = config.domain.name.substr(subDomain.length + 1);
 
 const defaultHeaders = {
     'Host': 'www.united-domains.de',
@@ -33,52 +34,50 @@ const defaultHeaders = {
     'Cookie': 'welcome-layer-seen=1; CookieSettingsGroupId=5565384.2'
 };
 
+
 async function update() {
-    const start = Date.now();
+    if (busy) return;
 
-    config = await readConfig();
-    subDomain = (config.domain.name.match(/^(.*?)\..+?\..*?$/) || '')[1] || '';
+    busy = true;
 
-    if (subDomain) config.domain.name = config.domain.name.substr(subDomain.length + 1);
-
-    if (!await isAuthenticated()) await login();
+    try {
+        if (!await isAuthenticated()) await login();
 
 
-    const ipV4 = await getV4();
-    const domainIpV4 = await getCurrentIPV4(config.domain.name);
+        const ipV4 = await require('public-ip').v4();
+        const domainIpV4 = await getCurrentIPV4(config.domain.name);
 
 
-    const ipV6 = await getV6();
-    const domainIpV6 = await getCurrentIPV6(config.domain.name);
+        const ipV6 = await require('public-ip').v6();
+        const domainIpV6 = await getCurrentIPV6(config.domain.name);
 
-    if (ipV4 !== domainIpV4 || ipV6 !== domainIpV6) console.log(config.domain.name);
+        if (ipV4 !== domainIpV4 || ipV6 !== domainIpV6) console.log(config.domain.name);
 
-    if (ipV4 !== domainIpV4) {
-        console.log(ipV4, domainIpV4);
-        await setIPV4(config.domain.name, ipV4);
+        if (ipV4 !== domainIpV4) {
+            console.log(ipV4, domainIpV4);
+            await setIPV4(config.domain.name, ipV4);
+        }
+
+        if (ipV6 !== domainIpV6) {
+            console.log(ipV6, domainIpV6);
+            await setIPV6(config.domain.name, ipV6);
+        }
+
+        delete require.cache['public-ip'];
+    } catch (err) {
+        console.log(err);
     }
 
-    if (ipV6 !== domainIpV6) {
-        console.log(ipV6, domainIpV6);
-        await setIPV6(config.domain.name, ipV6);
-    }
-
-    if (start + config['update interval'] > Date.now()) await asyncTimeout((start + config['update interval']) - Date.now());
-
-    await update();
+    busy = false;
 }
 
 async function asyncRequest(uri: string, options?: CoreOptions): Promise<Response> {
     return new Promise((resolve, reject) => {
-        request(uri, options, ((error, response) => {
+        request(uri, { ...options, timeout: config['update interval'] }, ((error, response) => {
             if (error) reject(error);
             else resolve(response);
         }));
     });
-}
-
-function asyncTimeout(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(() => resolve(), ms));
 }
 
 async function getLoginCSRF(): Promise<string> {
@@ -222,8 +221,5 @@ async function setUserLanguage() {
     await asyncRequest('https://www.united-domains.de/set-user-language', { method: 'POST', headers: Object.assign({ 'HTTP-X-CSRF-TOKEN': await getLanguageCSRF() }, defaultHeaders), body: 'language=de' });
 }
 
-async function readConfig(): Promise<Config> {
-    return JSON.parse(await readFile('config.json', { encoding: 'utf8' }));
-}
 
-update();
+setInterval(update, config['update interval']);
