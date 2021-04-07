@@ -2,9 +2,9 @@
   "name": "uda",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc main.ts",
+    "start": "node main"
   },
   "author": "",
   "license": "ISC",
@@ -16,7 +16,6 @@
   "dependencies": {
     "node-html-parser": "^2.0.0",
     "public-ip": "^4.0.3",
-    "request": "^2.88.2",
-    "requestify": "^0.2.5"
+    "request": "^2.88.2"
   }
 }
