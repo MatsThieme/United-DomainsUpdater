@@ -1,9 +1,9 @@
-import { v4 as getV4, v6 as getV6 } from "public-ip";
-import parse, { HTMLElement } from "node-html-parser";
-import { CoreOptions, Response } from "request";
-import { readFile } from "fs/promises";
+import { readFile } from 'fs/promises';
+import parse, { HTMLElement } from 'node-html-parser';
+import { v4 as getV4, v6 as getV6 } from 'public-ip';
+import { CoreOptions, Response } from 'request';
 
-import r  = require('request');
+import r = require('request');
 
 const request = r.defaults({ jar: true, gzip: true });
 
@@ -11,7 +11,7 @@ const request = r.defaults({ jar: true, gzip: true });
 interface Config {
     email: string,
     password: string,
-    "update interval": number,
+    'update interval': number,
     domain: {
         name: string,
         ttl: number
@@ -41,35 +41,32 @@ async function update() {
 
     if (subDomain) config.domain.name = config.domain.name.substr(subDomain.length + 1);
 
-    console.log(config.domain.name);
+    if (!await isAuthenticated()) await login();
+
 
     const ipV4 = await getV4();
     const domainIpV4 = await getCurrentIPV4(config.domain.name);
 
-    console.log(ipV4, domainIpV4);
 
     const ipV6 = await getV6();
     const domainIpV6 = await getCurrentIPV6(config.domain.name);
 
-    console.log(ipV6, domainIpV6);
+    if (ipV4 !== domainIpV4 || ipV6 !== domainIpV6) console.log(config.domain.name);
 
-    if ((ipV4 !== domainIpV4 || ipV6 !== domainIpV6) && !await isAuthenticated()) {
-        console.log('login');
-
-        await login();
-
-        console.log('loggedin');
+    if (ipV4 !== domainIpV4) {
+        console.log(ipV4, domainIpV4);
+        await setIPV4(config.domain.name, ipV4);
     }
 
-    if (ipV4 !== domainIpV4) await setIPV4(config.domain.name, ipV4);
+    if (ipV6 !== domainIpV6) {
+        console.log(ipV6, domainIpV6);
+        await setIPV6(config.domain.name, ipV6);
+    }
 
-    if (ipV6 !== domainIpV6) await setIPV6(config.domain.name, ipV6);
-
-    if (start + config["update interval"] > Date.now()) await asyncTimeout((start + config["update interval"]) - Date.now());
+    if (start + config['update interval'] > Date.now()) await asyncTimeout((start + config['update interval']) - Date.now());
 
     await update();
 }
-
 
 async function asyncRequest(uri: string, options?: CoreOptions): Promise<Response> {
     return new Promise((resolve, reject) => {
@@ -115,6 +112,8 @@ async function getDomainID(domain: string, fail: boolean = false): Promise<numbe
 }
 
 async function login(): Promise<void> {
+    console.log('login');
+
     await setUserLanguage();
 
     const loginBody = `csrf=${await getLoginCSRF()}&selector=login&email=${encodeURIComponent(config.email)}&pwd=${config.password}&loginBtn=Login`;
@@ -128,6 +127,8 @@ async function login(): Promise<void> {
             'Origin': 'https://www.united-domains.de'
         }, defaultHeaders)
     });
+
+    console.log('loggedin');
 }
 
 async function isAuthenticated(): Promise<boolean> {
@@ -137,22 +138,23 @@ async function isAuthenticated(): Promise<boolean> {
 }
 
 async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promise<void> {
-    console.log('set ip');
-
     const domainID = await getDomainID(domain);
+
+    const id = (isIpV6 ? await getCurrentIPV6RecordId(domain) : await getCurrentIPV4RecordId(domain)) || null;
 
     const body = JSON.stringify({
         'record': {
             'address': ip,
-            'filter_value': '',
+            'filter_value': config.domain.name,
             'ttl': config.domain.ttl,
             'type': isIpV6 ? 'AAAA' : 'A',
             'standard_value': false,
             'sub_domain': subDomain,
             'domain': config.domain.name,
-            'id': null,
-            "webspace": false,
-            'formId': isIpV6 ? 'AAAA0' : 'A0'
+            'id': id,
+            'webspace': false,
+            'formId': id,
+            'udag_record_type': 5
         },
         'domain_lock_state': {
             'domain_locked': false,
@@ -160,9 +162,8 @@ async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promi
         }
     });
 
-    console.log(body);
 
-    await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${domainID}/records`, {
+    const res = await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${domainID}/records`, {
         method: 'PUT',
         body,
         headers: Object.assign({
@@ -171,25 +172,49 @@ async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promi
             'Content-Length': body.length
         }, defaultHeaders)
     });
+
+    if (res.statusCode !== 200) console.log(res.statusMessage);
+}
+
+async function getDomainRecordIPV4(domain: string): Promise<{ domain: string, address: string, id: number } | undefined> {
+    if (!await isAuthenticated()) return <undefined>console.error('not authenticated');
+
+    const x: { data: { A: { domain: string, address: string, id: number }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
+
+    return x.data.A.find(e => e.domain === domain);
+}
+
+async function getDomainRecordIPV6(domain: string): Promise<{ domain: string, address: string, id: number } | undefined> {
+    if (!await isAuthenticated()) return <undefined>console.error('not authenticated');
+
+    const x: { data: { AAAA: { domain: string, address: string, id: number }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
+
+    return x.data.AAAA.find(e => e.domain === domain);
 }
 
 async function getCurrentIPV4(domain: string): Promise<string | undefined> {
-    const x: { data: { A: { domain: string, address: string }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
-
-    return x.data.A.find(e => e.domain === domain)?.address;
+    return (await getDomainRecordIPV4(domain))?.address;
 }
 
 async function getCurrentIPV6(domain: string): Promise<string | undefined> {
-    const x: { data: { AAAA: { domain: string, address: string }[] } } = JSON.parse((await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${await getDomainID(domain)}/records`, { headers: defaultHeaders })).body);
+    return (await getDomainRecordIPV6(domain))?.address;
+}
 
-    return x.data.AAAA.find(e => e.domain === domain)?.address;
+async function getCurrentIPV4RecordId(domain: string): Promise<number | undefined> {
+    return (await getDomainRecordIPV4(domain))?.id;
+}
+
+async function getCurrentIPV6RecordId(domain: string): Promise<number | undefined> {
+    return (await getDomainRecordIPV6(domain))?.id;
 }
 
 async function setIPV4(domain: string, ip: string): Promise<void> {
+    console.log('set ip v4');
     await setIP(domain, ip);
 }
 
 async function setIPV6(domain: string, ip: string): Promise<void> {
+    console.log('set ip v6');
     await setIP(domain, ip, true);
 }
 
