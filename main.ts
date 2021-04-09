@@ -1,4 +1,5 @@
 import parse, { HTMLElement } from 'node-html-parser';
+import { v4, v6 } from 'public-ip';
 import { CoreOptions, Response } from 'request';
 
 import r = require('request');
@@ -16,6 +17,7 @@ interface Config {
     }
 }
 
+let wait: number = 0;
 let busy: boolean = false;
 const config: Config = require('./config.json');
 const subDomain: string = (config.domain.name.match(/^(.*?)\..+?\..*?$/) || '')[1] || '';
@@ -35,37 +37,48 @@ const defaultHeaders = {
 };
 
 
-async function update() {
-    if (busy) return;
+async function update(): Promise<void> {
+    if (busy || wait > 0) {
+        wait--;
+        return;
+    }
 
     busy = true;
 
     try {
-        if (!await isAuthenticated()) await login();
+        if (!await isAuthenticated()) {
+            console.log('login');
+            if (!await login()) {
+                busy = false;
+                wait = 5;
+                console.log('could not log in');
+                return;
+            }
+            console.log('loggedin');
+        }
 
 
-        const ipV4 = await require('public-ip').v4();
+        const ipV4 = await v4();
         const domainIpV4 = await getCurrentIPV4(config.domain.name);
 
 
-        const ipV6 = await require('public-ip').v6();
+        const ipV6 = await v6();
         const domainIpV6 = await getCurrentIPV6(config.domain.name);
 
         if (ipV4 !== domainIpV4 || ipV6 !== domainIpV6) console.log(config.domain.name);
 
         if (ipV4 !== domainIpV4) {
-            console.log(ipV4, domainIpV4);
+            console.log(`set ip: current ip: ${ipV4} current domain record: ${domainIpV4}`);
             await setIPV4(config.domain.name, ipV4);
         }
 
         if (ipV6 !== domainIpV6) {
-            console.log(ipV6, domainIpV6);
+            console.log(`set ip: current ip: ${ipV6} current domain record: ${domainIpV6}`);
             await setIPV6(config.domain.name, ipV6);
         }
-
-        delete require.cache['public-ip'];
     } catch (err) {
-        console.log(err);
+        if (!err.code.includes('TIMEDOUT')) console.log(err);
+        else wait = 5;
     }
 
     busy = false;
@@ -101,8 +114,8 @@ async function getDomainID(domain: string, fail: boolean = false): Promise<numbe
     if (fail) throw 'not authenticated';
 
     if (!await isAuthenticated()) {
-        await login();
-        return await getDomainID(domain, true);
+        if (await login()) return await getDomainID(domain, true);
+        else return undefined;
     }
 
     const json = <string>(await asyncRequest('https://www.united-domains.de/pfapi/domain-list', { headers: defaultHeaders })).body;
@@ -110,9 +123,7 @@ async function getDomainID(domain: string, fail: boolean = false): Promise<numbe
     return JSON.parse(json).data.find((domain: { domain: string, id: number }) => domain.domain === config.domain.name).id;
 }
 
-async function login(): Promise<void> {
-    console.log('login');
-
+async function login(): Promise<boolean> {
     await setUserLanguage();
 
     const loginBody = `csrf=${await getLoginCSRF()}&selector=login&email=${encodeURIComponent(config.email)}&pwd=${config.password}&loginBtn=Login`;
@@ -120,14 +131,15 @@ async function login(): Promise<void> {
     await asyncRequest('https://www.united-domains.de/login', {
         method: 'POST',
         body: loginBody,
-        headers: Object.assign({
+        headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Content-Length': loginBody.length,
-            'Origin': 'https://www.united-domains.de'
-        }, defaultHeaders)
+            'Origin': 'https://www.united-domains.de',
+            ...defaultHeaders
+        }
     });
 
-    console.log('loggedin');
+    return (await isAuthenticated());
 }
 
 async function isAuthenticated(): Promise<boolean> {
@@ -138,6 +150,8 @@ async function isAuthenticated(): Promise<boolean> {
 
 async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promise<void> {
     const domainID = await getDomainID(domain);
+
+    if (domainID === undefined) throw new Error('domainID undefined');
 
     const id = (isIpV6 ? await getCurrentIPV6RecordId(domain) : await getCurrentIPV4RecordId(domain)) || null;
 
@@ -152,8 +166,7 @@ async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promi
             'domain': config.domain.name,
             'id': id,
             'webspace': false,
-            'formId': id,
-            'udag_record_type': 5
+            'formId': id
         },
         'domain_lock_state': {
             'domain_locked': false,
@@ -165,11 +178,12 @@ async function setIP(domain: string, ip: string, isIpV6: boolean = false): Promi
     const res = await asyncRequest(`https://www.united-domains.de/pfapi/dns/domain/${domainID}/records`, {
         method: 'PUT',
         body,
-        headers: Object.assign({
+        headers: {
             'Http-X-Csrf-Token': await getLanguageCSRF(),
             'Content-Type': 'application/json; charset=utf-8',
-            'Content-Length': body.length
-        }, defaultHeaders)
+            'Content-Length': body.length,
+            ...defaultHeaders
+        }
     });
 
     if (res.statusCode !== 200) console.log(res.statusMessage);
@@ -208,7 +222,6 @@ async function getCurrentIPV6RecordId(domain: string): Promise<number | undefine
 }
 
 async function setIPV4(domain: string, ip: string): Promise<void> {
-    console.log('set ip v4');
     await setIP(domain, ip);
 }
 
@@ -218,7 +231,7 @@ async function setIPV6(domain: string, ip: string): Promise<void> {
 }
 
 async function setUserLanguage() {
-    await asyncRequest('https://www.united-domains.de/set-user-language', { method: 'POST', headers: Object.assign({ 'HTTP-X-CSRF-TOKEN': await getLanguageCSRF() }, defaultHeaders), body: 'language=de' });
+    await asyncRequest('https://www.united-domains.de/set-user-language', { method: 'POST', headers: { 'HTTP-X-CSRF-TOKEN': await getLanguageCSRF(), ...defaultHeaders }, body: 'language=de' });
 }
 
 
